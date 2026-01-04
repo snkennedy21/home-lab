@@ -1,0 +1,89 @@
+---
+- name: Install core utilities
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install core packages
+      apt:
+        name:
+          - git
+          - curl
+          - wget
+          - htop
+          - vim
+          - unzip
+          - tar
+          - jq
+          - tmux
+          - ncdu
+          - net-tools
+        state: present
+
+    # Docker installation
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - ca-certificates
+          - gnupg
+        state: present
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Enable Docker service
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    # Node.js and Claude Code installation
+    - name: Add NodeSource GPG key
+      apt_key:
+        url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        state: present
+
+    - name: Add NodeSource repository
+      apt_repository:
+        repo: deb https://deb.nodesource.com/node_20.x nodistro main
+        state: present
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+        update_cache: yes
+
+    - name: Install Claude Code globally
+      npm:
+        name: "@anthropic-ai/claude-code"
+        global: yes
+        state: present
