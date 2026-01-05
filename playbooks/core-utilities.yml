@@ -2,6 +2,8 @@
 - name: Install core utilities
   hosts: all
   become: yes
+  vars_files:
+    - ../vars/secrets.yml
 
   tasks:
     - name: Update apt cache
@@ -87,3 +89,47 @@
         name: "@anthropic-ai/claude-code"
         global: yes
         state: present
+
+    # Cloudflared installation
+    - name: Add Cloudflare GPG key
+      apt_key:
+        url: https://pkg.cloudflare.com/cloudflare-main.gpg
+        state: present
+
+    - name: Add Cloudflare repository
+      apt_repository:
+        repo: deb https://pkg.cloudflare.com/cloudflared {{ ansible_distribution_release }} main
+        state: present
+
+    - name: Install cloudflared
+      apt:
+        name: cloudflared
+        state: present
+        update_cache: yes
+
+    # Tailscale installation
+    - name: Add Tailscale GPG key
+      apt_key:
+        url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg
+        state: present
+
+    - name: Add Tailscale repository
+      apt_repository:
+        repo: deb https://pkgs.tailscale.com/stable/ubuntu {{ ansible_distribution_release }} main
+        state: present
+
+    - name: Install Tailscale
+      apt:
+        name: tailscale
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Tailscale service
+      systemd:
+        name: tailscaled
+        enabled: yes
+        state: started
+
+    - name: Authenticate Tailscale
+      command: tailscale up --authkey={{ tailscale_authkey }}
+      when: tailscale_authkey is defined
