@@ -15,13 +15,23 @@ This repository automates the setup of Ubuntu VMs with Docker, Tailscale, and Cl
    ```
 3. Configure your secrets in `vars/secrets.yml` (see Secrets section)
 
-### Run the Playbook
+### Run the Playbooks
 
+**Option 1: Full stack (everything at once)**
 ```bash
 ansible-playbook playbooks/core-utilities.yml
 ```
 
-This provisions all hosts in `inventory/hosts.yml` with the full stack.
+**Option 2: Split workflow (for demos or staged setup)**
+```bash
+# Step 1: Base infrastructure + Tailscale (run before taking VM snapshot)
+ansible-playbook playbooks/base-infrastructure.yml
+
+# Step 2: Deploy webapp + Cloudflare Tunnel (run after snapshot revert)
+ansible-playbook playbooks/deploy-webapp.yml
+```
+
+This provisions all hosts in `inventory/hosts.yml`.
 
 ---
 
@@ -33,7 +43,9 @@ This provisions all hosts in `inventory/hosts.yml` with the full stack.
 ├── inventory/
 │   └── hosts.yml            # Target servers
 ├── playbooks/
-│   └── core-utilities.yml   # Main provisioning playbook
+│   ├── core-utilities.yml   # Full stack (everything)
+│   ├── base-infrastructure.yml  # Core utils + Tailscale only
+│   └── deploy-webapp.yml    # Docker + App + Cloudflare Tunnel
 ├── vars/
 │   └── secrets.yml          # Secrets (gitignored)
 └── .gitignore
@@ -41,20 +53,28 @@ This provisions all hosts in `inventory/hosts.yml` with the full stack.
 
 ---
 
-## What the Playbook Installs
+## What the Playbooks Install
 
-The `core-utilities.yml` playbook installs and configures:
+### `base-infrastructure.yml` (run before snapshot)
 
 | Component | Description |
 |-----------|-------------|
 | Core utilities | git, curl, wget, htop, vim, jq, tmux, etc. |
+| Tailscale | Mesh VPN for remote SSH access |
+
+### `deploy-webapp.yml` (run after snapshot revert)
+
+| Component | Description |
+|-----------|-------------|
 | Docker | Docker CE with compose plugin |
 | Node.js 20.x | Via NodeSource repository |
 | Claude Code | `@anthropic-ai/claude-code` CLI |
 | cloudflared | Cloudflare Tunnel daemon |
-| Tailscale | Mesh VPN for remote access |
 | FastAPI webapp | Hello World app in Docker container |
-| Cloudflare Tunnel | Exposes webapp to the internet |
+
+### `core-utilities.yml` (full stack)
+
+Installs everything from both playbooks above in one run.
 
 ---
 
@@ -219,9 +239,18 @@ If you have an existing tunnel created via `cloudflared tunnel create`:
 ### Ansible
 
 ```bash
-ansible-playbook playbooks/core-utilities.yml              # Run full playbook
-ansible-playbook playbooks/core-utilities.yml --limit VM-2 # Single host
-ansible all -m ping                                         # Test connectivity
+# Full stack
+ansible-playbook playbooks/core-utilities.yml
+
+# Split workflow
+ansible-playbook playbooks/base-infrastructure.yml   # Tailscale + core utils
+ansible-playbook playbooks/deploy-webapp.yml         # Docker + app + tunnel
+
+# Target single host
+ansible-playbook playbooks/deploy-webapp.yml --limit VM-2
+
+# Test connectivity
+ansible all -m ping
 ```
 
 ### Docker
@@ -289,5 +318,5 @@ ssh sean@<ip> "sudo timedatectl set-ntp on && sudo systemctl restart systemd-tim
 ## Tech Debt
 
 - [ ] **Migrate secrets to Ansible Vault** - Currently using `vars/secrets.yml` (gitignored) for sensitive data. Should encrypt with Ansible Vault for better security and ability to commit encrypted secrets.
-- [ ] **Split playbook into roles** - Consider breaking the monolithic playbook into Ansible roles for better organization.
+- [x] **Split playbook into roles** - Playbooks split into `base-infrastructure.yml` and `deploy-webapp.yml` for staged/demo workflows.
 - [ ] **Add health checks** - Add verification tasks to confirm services are running correctly.

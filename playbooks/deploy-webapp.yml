@@ -1,0 +1,198 @@
+---
+- name: Deploy webapp with Cloudflare Tunnel
+  hosts: tailscale
+  become: yes
+  vars_files:
+    - ../vars/secrets.yml
+
+  tasks:
+    # ============================================================
+    # TIME SYNC - Fix stale clock after snapshot revert
+    # ============================================================
+
+    - name: Enable NTP time sync
+      command: timedatectl set-ntp on
+      changed_when: false
+
+    - name: Restart time sync service
+      systemd:
+        name: systemd-timesyncd
+        state: restarted
+
+    - name: Wait for time to sync
+      pause:
+        seconds: 5
+
+    # ============================================================
+    # DOCKER - Container runtime
+    # ============================================================
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - ca-certificates
+          - gnupg
+        state: present
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Enable Docker service
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    # ============================================================
+    # NODE.JS - Runtime for Claude Code
+    # ============================================================
+
+    - name: Add NodeSource GPG key
+      apt_key:
+        url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        state: present
+
+    - name: Add NodeSource repository
+      apt_repository:
+        repo: deb https://deb.nodesource.com/node_20.x nodistro main
+        state: present
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+        update_cache: yes
+
+    - name: Install Claude Code globally
+      npm:
+        name: "@anthropic-ai/claude-code"
+        global: yes
+        state: present
+
+    # ============================================================
+    # CLOUDFLARE TUNNEL - Public access
+    # ============================================================
+
+    - name: Add Cloudflare GPG key
+      apt_key:
+        url: https://pkg.cloudflare.com/cloudflare-main.gpg
+        state: present
+
+    - name: Add Cloudflare repository
+      apt_repository:
+        repo: deb https://pkg.cloudflare.com/cloudflared {{ ansible_distribution_release }} main
+        state: present
+
+    - name: Install cloudflared
+      apt:
+        name: cloudflared
+        state: present
+        update_cache: yes
+
+    - name: Install Cloudflare Tunnel service
+      command: cloudflared service install {{ cloudflare_tunnel_token }}
+      args:
+        creates: /etc/systemd/system/cloudflared.service
+      when: cloudflare_tunnel_token is defined
+
+    - name: Enable and start Cloudflare Tunnel service
+      systemd:
+        name: cloudflared
+        enabled: yes
+        state: started
+      when: cloudflare_tunnel_token is defined
+
+    # ============================================================
+    # WEBAPP - FastAPI application
+    # ============================================================
+
+    - name: Create webapp directory
+      file:
+        path: /home/{{ ansible_user }}/webapp
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Create FastAPI main.py
+      copy:
+        dest: /home/{{ ansible_user }}/webapp/main.py
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        content: |
+          from fastapi import FastAPI
+
+          app = FastAPI()
+
+          @app.get("/")
+          async def root():
+              return {"message": "Hello World"}
+
+    - name: Create requirements.txt
+      copy:
+        dest: /home/{{ ansible_user }}/webapp/requirements.txt
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        content: |
+          fastapi
+          uvicorn[standard]
+
+    - name: Create Dockerfile
+      copy:
+        dest: /home/{{ ansible_user }}/webapp/Dockerfile
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        content: |
+          FROM python:3.11-slim
+          WORKDIR /app
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir -r requirements.txt
+          COPY . .
+          EXPOSE 8000
+          CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+    - name: Build FastAPI Docker image
+      community.docker.docker_image:
+        name: webapp
+        source: build
+        build:
+          path: /home/{{ ansible_user }}/webapp
+        state: present
+        force_source: yes
+
+    - name: Run FastAPI container
+      community.docker.docker_container:
+        name: webapp
+        image: webapp
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "8000:8000"

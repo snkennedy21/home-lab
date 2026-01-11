@@ -1,0 +1,62 @@
+---
+- name: Base infrastructure with Tailscale
+  hosts: local
+  become: yes
+  vars_files:
+    - ../vars/secrets.yml
+
+  tasks:
+    # ============================================================
+    # BASE - Core packages and utilities
+    # ============================================================
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install core packages
+      apt:
+        name:
+          - git
+          - curl
+          - wget
+          - htop
+          - vim
+          - unzip
+          - tar
+          - jq
+          - tmux
+          - ncdu
+          - net-tools
+        state: present
+
+    # ============================================================
+    # TAILSCALE - Remote access VPN
+    # ============================================================
+
+    - name: Add Tailscale GPG key
+      apt_key:
+        url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg
+        state: present
+
+    - name: Add Tailscale repository
+      apt_repository:
+        repo: deb https://pkgs.tailscale.com/stable/ubuntu {{ ansible_distribution_release }} main
+        state: present
+
+    - name: Install Tailscale
+      apt:
+        name: tailscale
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Tailscale service
+      systemd:
+        name: tailscaled
+        enabled: yes
+        state: started
+
+    - name: Authenticate Tailscale
+      command: tailscale up --authkey={{ tailscale_authkey }}
+      when: tailscale_authkey is defined
