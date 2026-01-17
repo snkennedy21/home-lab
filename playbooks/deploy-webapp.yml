@@ -1,9 +1,11 @@
 ---
 - name: Deploy webapp with Cloudflare Tunnel
-  hosts: tailscale
+  hosts: local
   become: yes
   vars_files:
     - ../vars/secrets.yml
+  vars:
+    webapp_image: ghcr.io/snkennedy21/portfolio-webapp:latest
 
   tasks:
     # ============================================================
@@ -131,68 +133,23 @@
       when: cloudflare_tunnel_token is defined
 
     # ============================================================
-    # WEBAPP - FastAPI application
+    # WEBAPP - Pull and run from GitHub Container Registry
     # ============================================================
 
-    - name: Create webapp directory
-      file:
-        path: /home/{{ ansible_user }}/webapp
-        state: directory
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        mode: "0755"
-
-    - name: Create FastAPI main.py
-      copy:
-        dest: /home/{{ ansible_user }}/webapp/main.py
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        content: |
-          from fastapi import FastAPI
-
-          app = FastAPI()
-
-          @app.get("/")
-          async def root():
-              return {"message": "Hello World"}
-
-    - name: Create requirements.txt
-      copy:
-        dest: /home/{{ ansible_user }}/webapp/requirements.txt
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        content: |
-          fastapi
-          uvicorn[standard]
-
-    - name: Create Dockerfile
-      copy:
-        dest: /home/{{ ansible_user }}/webapp/Dockerfile
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        content: |
-          FROM python:3.11-slim
-          WORKDIR /app
-          COPY requirements.txt .
-          RUN pip install --no-cache-dir -r requirements.txt
-          COPY . .
-          EXPOSE 8000
-          CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-    - name: Build FastAPI Docker image
+    - name: Pull webapp image from ghcr.io
       community.docker.docker_image:
-        name: webapp
-        source: build
-        build:
-          path: /home/{{ ansible_user }}/webapp
-        state: present
+        name: "{{ webapp_image }}"
+        source: pull
         force_source: yes
 
-    - name: Run FastAPI container
+    - name: Run webapp container
       community.docker.docker_container:
         name: webapp
-        image: webapp
+        image: "{{ webapp_image }}"
         state: started
         restart_policy: unless-stopped
+        pull: true
         ports:
-          - "8000:8000"
+          - "3000:3000"
+        env:
+          GROQ_API_KEY: "{{ groq_api_key }}"
