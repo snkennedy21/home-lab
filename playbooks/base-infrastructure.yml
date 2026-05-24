@@ -57,6 +57,16 @@
         enabled: yes
         state: started
 
-    - name: Authenticate Tailscale
+    - name: Check current Tailscale status
+      command: tailscale status --json
+      register: tailscale_status
+      changed_when: false
+      failed_when: false
+
+    - name: Authenticate Tailscale if not already connected
       command: tailscale up --authkey={{ tailscale_authkey }}
-      when: tailscale_authkey is defined
+      register: tailscale_up
+      no_log: true
+      when:
+        - tailscale_authkey is defined
+        - tailscale_status.rc != 0 or (tailscale_status.stdout | from_json).BackendState != "Running"

@@ -1,0 +1,110 @@
+---
+- name: Deploy Jellyfin media server
+  hosts: local
+  become: yes
+  vars:
+    jellyfin_image: docker.io/jellyfin/jellyfin:latest
+    jellyfin_container_name: jellyfin
+    jellyfin_port: 8096
+    jellyfin_config_dir: /srv/jellyfin/config
+    jellyfin_cache_dir: /srv/jellyfin/cache
+    jellyfin_media_root: /srv/media
+    jellyfin_movies_dir: /srv/media/movies
+    jellyfin_tv_dir: /srv/media/tv
+    jellyfin_uid: "{{ ansible_user_uid }}"
+    jellyfin_gid: "{{ ansible_user_gid }}"
+
+  tasks:
+    # ============================================================
+    # DOCKER - Container runtime for Jellyfin
+    # ============================================================
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - gnupg
+          - python3-docker
+        state: present
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Add remote user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    # ============================================================
+    # STORAGE - Persistent application and media directories
+    # ============================================================
+
+    - name: Create Jellyfin directories
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ jellyfin_config_dir }}", mode: "0755" }
+        - { path: "{{ jellyfin_cache_dir }}", mode: "0755" }
+        - { path: "{{ jellyfin_media_root }}", mode: "0755" }
+        - { path: "{{ jellyfin_movies_dir }}", mode: "0755" }
+        - { path: "{{ jellyfin_tv_dir }}", mode: "0755" }
+
+    # ============================================================
+    # JELLYFIN - Media server for private streaming over Tailscale
+    # ============================================================
+
+    - name: Pull Jellyfin image
+      community.docker.docker_image:
+        name: "{{ jellyfin_image }}"
+        source: pull
+        force_source: yes
+
+    - name: Run Jellyfin container
+      community.docker.docker_container:
+        name: "{{ jellyfin_container_name }}"
+        image: "{{ jellyfin_image }}"
+        state: started
+        restart_policy: unless-stopped
+        pull: true
+        user: "{{ jellyfin_uid }}:{{ jellyfin_gid }}"
+        published_ports:
+          - "{{ jellyfin_port }}:8096"
+        volumes:
+          - "{{ jellyfin_config_dir }}:/config"
+          - "{{ jellyfin_cache_dir }}:/cache"
+          - "{{ jellyfin_movies_dir }}:/media/movies:ro"
+          - "{{ jellyfin_tv_dir }}:/media/tv:ro"
+
