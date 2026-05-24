@@ -1,0 +1,81 @@
+---
+- name: Deploy portfolio website with Cloudflare Tunnel
+  hosts: local
+  become: yes
+  vars_files:
+    - ../vars/secrets.yml
+  vars:
+    portfolio_image: ghcr.io/snkennedy21/portfolio-webapp:latest
+
+  tasks:
+    # ============================================================
+    # TIME SYNC - Fix stale clock after snapshot revert
+    # ============================================================
+
+    - name: Enable NTP time sync
+      command: timedatectl set-ntp on
+      changed_when: false
+
+    - name: Restart time sync service
+      systemd:
+        name: systemd-timesyncd
+        state: restarted
+
+    - name: Wait for time to sync
+      pause:
+        seconds: 5
+
+    # ============================================================
+    # CLOUDFLARE TUNNEL - Public access
+    # ============================================================
+
+    - name: Add Cloudflare GPG key
+      apt_key:
+        url: https://pkg.cloudflare.com/cloudflare-main.gpg
+        state: present
+
+    - name: Add Cloudflare repository
+      apt_repository:
+        repo: deb https://pkg.cloudflare.com/cloudflared {{ ansible_distribution_release }} main
+        state: present
+
+    - name: Install cloudflared
+      apt:
+        name: cloudflared
+        state: present
+        update_cache: yes
+
+    - name: Install Cloudflare Tunnel service
+      command: cloudflared service install {{ cloudflare_tunnel_token }}
+      args:
+        creates: /etc/systemd/system/cloudflared.service
+      when: cloudflare_tunnel_token is defined
+
+    - name: Enable and start Cloudflare Tunnel service
+      systemd:
+        name: cloudflared
+        enabled: yes
+        state: started
+      when: cloudflare_tunnel_token is defined
+
+    # ============================================================
+    # PORTFOLIO - Pull and run from GitHub Container Registry
+    # ============================================================
+
+    - name: Pull portfolio image from ghcr.io
+      community.docker.docker_image:
+        name: "{{ portfolio_image }}"
+        source: pull
+        force_source: yes
+
+    - name: Run portfolio container
+      community.docker.docker_container:
+        name: webapp
+        image: "{{ portfolio_image }}"
+        state: started
+        restart_policy: unless-stopped
+        pull: true
+        ports:
+          - "3000:3000"
+        env:
+          GROQ_API_KEY: "{{ groq_api_key }}"

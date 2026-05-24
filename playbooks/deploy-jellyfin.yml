@@ -16,55 +16,6 @@
 
   tasks:
     # ============================================================
-    # DOCKER - Container runtime for Jellyfin
-    # ============================================================
-
-    - name: Update apt cache
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-
-    - name: Install Docker prerequisites
-      apt:
-        name:
-          - ca-certificates
-          - gnupg
-          - python3-docker
-        state: present
-
-    - name: Add Docker GPG key
-      apt_key:
-        url: https://download.docker.com/linux/ubuntu/gpg
-        state: present
-
-    - name: Add Docker repository
-      apt_repository:
-        repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
-        state: present
-
-    - name: Install Docker Engine
-      apt:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-compose-plugin
-        state: present
-        update_cache: yes
-
-    - name: Add remote user to docker group
-      user:
-        name: "{{ ansible_user }}"
-        groups: docker
-        append: yes
-
-    - name: Enable and start Docker
-      systemd:
-        name: docker
-        enabled: yes
-        state: started
-
-    # ============================================================
     # STORAGE - Persistent application and media directories
     # ============================================================
 
@@ -107,4 +58,3 @@
           - "{{ jellyfin_cache_dir }}:/cache"
           - "{{ jellyfin_movies_dir }}:/media/movies:ro"
           - "{{ jellyfin_tv_dir }}:/media/tv:ro"
-
