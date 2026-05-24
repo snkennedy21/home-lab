@@ -1,0 +1,294 @@
+---
+- name: Deploy Vector with Docker Compose
+  hosts: local
+  become: yes
+  vars_files:
+    - ../vars/secrets.yml
+  vars:
+    vector_deploy_dir: /srv/vector
+    vector_project_name: vector
+    vector_image_tag: develop
+    vector_backend_image: ghcr.io/snkennedy21/vector-backend
+    vector_frontend_image: ghcr.io/snkennedy21/vector-frontend
+
+    vector_frontend_port: 5173
+    vector_backend_port: 8000
+    vector_postgres_port: 5432
+    vector_redis_port: 6379
+    vector_pgadmin_port: 5050
+
+    vector_postgres_db: vector
+    vector_postgres_user: vector
+    vector_postgres_password: vector
+
+    vector_redis_url: redis://redis:6379/0
+    vector_frontend_origins: "http://{{ ansible_host }}:{{ vector_frontend_port }},http://localhost:{{ vector_frontend_port }}"
+    vector_vite_api_base_url: /api
+    vector_vite_api_proxy_target: http://backend:8000
+
+    vector_ais_source: fixture
+    vector_ais_fixture_path: /app/app/fixtures/aisstream-position-reports-sample.json
+    vector_ais_allow_fixture_fallback: "true"
+    vector_aisstream_ws_url: wss://stream.aisstream.io/v0/stream
+    vector_aisstream_api_key: ""
+    vector_aisstream_bounding_boxes: "[[[40.4774,-74.2591],[40.9176,-73.7004]]]"
+    vector_aisstream_message_types: PositionReport
+    vector_aisstream_connect_timeout_seconds: 200
+    vector_aisstream_sample_message_limit: 50
+    vector_aisstream_disable_tls_verify: "false"
+    vector_ais_consumer_poll_seconds: 60
+    vector_ais_consumer_run_once: "false"
+    vector_ais_consumer_reconnect_backoff_seconds: 5
+
+    vector_pgadmin_default_email: admin@example.com
+    vector_pgadmin_default_password: vector
+
+  tasks:
+    # ============================================================
+    # HOST - Minimal packages needed to run Compose
+    # ============================================================
+
+    - name: Install Vector deployment dependencies
+      apt:
+        name:
+          - python3-docker
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Ensure Docker service is running
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    # ============================================================
+    # VECTOR - Render production Compose and environment
+    # ============================================================
+
+    - name: Create Vector deploy directory
+      file:
+        path: "{{ vector_deploy_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Copy Vector production Compose file
+      copy:
+        dest: "{{ vector_deploy_dir }}/compose.yaml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0644"
+        content: |
+          x-ais-environment: &ais-environment
+            AIS_SOURCE: "${AIS_SOURCE:-fixture}"
+            AIS_FIXTURE_PATH: "${AIS_FIXTURE_PATH:-/app/app/fixtures/aisstream-position-reports-sample.json}"
+            AIS_ALLOW_FIXTURE_FALLBACK: "${AIS_ALLOW_FIXTURE_FALLBACK:-true}"
+            AISSTREAM_WS_URL: "${AISSTREAM_WS_URL:-wss://stream.aisstream.io/v0/stream}"
+            AISSTREAM_API_KEY: "${AISSTREAM_API_KEY:-}"
+            AISSTREAM_BOUNDING_BOXES: "${AISSTREAM_BOUNDING_BOXES:-[[[40.4774,-74.2591],[40.9176,-73.7004]]]}"
+            AISSTREAM_MESSAGE_TYPES: "${AISSTREAM_MESSAGE_TYPES:-PositionReport}"
+            AISSTREAM_CONNECT_TIMEOUT_SECONDS: "${AISSTREAM_CONNECT_TIMEOUT_SECONDS:-30}"
+            AISSTREAM_SAMPLE_MESSAGE_LIMIT: "${AISSTREAM_SAMPLE_MESSAGE_LIMIT:-50}"
+            AISSTREAM_DISABLE_TLS_VERIFY: "${AISSTREAM_DISABLE_TLS_VERIFY:-false}"
+
+          services:
+            frontend:
+              image: "${VECTOR_FRONTEND_IMAGE:-ghcr.io/snkennedy21/vector-frontend}:${VECTOR_IMAGE_TAG:-develop}"
+              environment:
+                VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+                VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://backend:8000}
+              ports:
+                - "${FRONTEND_PORT:-5173}:5173"
+              depends_on:
+                backend:
+                  condition: service_healthy
+
+            backend:
+              image: "${VECTOR_BACKEND_IMAGE:-ghcr.io/snkennedy21/vector-backend}:${VECTOR_IMAGE_TAG:-develop}"
+              environment:
+                <<: *ais-environment
+                DATABASE_URL: ${DATABASE_URL:-}
+                POSTGRES_HOST: ${POSTGRES_HOST:-db}
+                POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+                POSTGRES_DB: ${POSTGRES_DB:-vector}
+                POSTGRES_USER: ${POSTGRES_USER:-vector}
+                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vector}
+                POSTGRES_CONNECT_TIMEOUT: ${POSTGRES_CONNECT_TIMEOUT:-5}
+                POSTGRES_POOL_MIN_SIZE: ${POSTGRES_POOL_MIN_SIZE:-1}
+                POSTGRES_POOL_MAX_SIZE: ${POSTGRES_POOL_MAX_SIZE:-5}
+                POSTGRES_POOL_TIMEOUT: ${POSTGRES_POOL_TIMEOUT:-5}
+                REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+                FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+              ports:
+                - "${BACKEND_PORT:-8000}:8000"
+              depends_on:
+                db:
+                  condition: service_healthy
+                redis:
+                  condition: service_healthy
+              healthcheck:
+                test:
+                  [
+                    "CMD",
+                    "python",
+                    "-c",
+                    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()",
+                  ]
+                interval: 5s
+                timeout: 5s
+                retries: 12
+
+            ais-consumer:
+              image: "${VECTOR_BACKEND_IMAGE:-ghcr.io/snkennedy21/vector-backend}:${VECTOR_IMAGE_TAG:-develop}"
+              command: python -m app.ais_consumer
+              environment:
+                <<: *ais-environment
+                AIS_CONSUMER_POLL_SECONDS: "${AIS_CONSUMER_POLL_SECONDS:-60}"
+                AIS_CONSUMER_RUN_ONCE: "${AIS_CONSUMER_RUN_ONCE:-false}"
+                AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS: "${AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS:-5}"
+                REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+              depends_on:
+                redis:
+                  condition: service_healthy
+
+            db:
+              image: postgis/postgis:16-3.4
+              environment:
+                POSTGRES_DB: ${POSTGRES_DB:-vector}
+                POSTGRES_USER: ${POSTGRES_USER:-vector}
+                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vector}
+              ports:
+                - "${POSTGRES_PORT:-5432}:5432"
+              volumes:
+                - postgres_data:/var/lib/postgresql/data
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+                interval: 5s
+                timeout: 5s
+                retries: 12
+
+            redis:
+              image: redis:7-alpine
+              ports:
+                - "${REDIS_PORT:-6379}:6379"
+              healthcheck:
+                test: ["CMD", "redis-cli", "ping"]
+                interval: 5s
+                timeout: 5s
+                retries: 12
+
+            pgadmin:
+              image: dpage/pgadmin4:8
+              environment:
+                PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+                PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-vector}
+              ports:
+                - "${PGADMIN_PORT:-5050}:80"
+              volumes:
+                - pgadmin_data:/var/lib/pgadmin
+              depends_on:
+                db:
+                  condition: service_healthy
+
+          volumes:
+            postgres_data:
+            pgadmin_data:
+
+    - name: Write Vector environment file
+      copy:
+        dest: "{{ vector_deploy_dir }}/.env"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+        content: |
+          VECTOR_IMAGE_TAG={{ vector_image_tag }}
+          VECTOR_BACKEND_IMAGE={{ vector_backend_image }}
+          VECTOR_FRONTEND_IMAGE={{ vector_frontend_image }}
+
+          POSTGRES_DB={{ vector_postgres_db }}
+          POSTGRES_HOST=db
+          POSTGRES_USER={{ vector_postgres_user }}
+          POSTGRES_PASSWORD={{ vector_postgres_password }}
+          POSTGRES_PORT={{ vector_postgres_port }}
+          POSTGRES_CONNECT_TIMEOUT=5
+          POSTGRES_POOL_MIN_SIZE=1
+          POSTGRES_POOL_MAX_SIZE=5
+          POSTGRES_POOL_TIMEOUT=5
+
+          REDIS_URL={{ vector_redis_url }}
+          REDIS_PORT={{ vector_redis_port }}
+
+          TEST_POSTGRES_DB={{ vector_postgres_db }}_test
+          TEST_POSTGRES_HOST=db
+          TEST_POSTGRES_USER={{ vector_postgres_user }}
+          TEST_POSTGRES_PASSWORD={{ vector_postgres_password }}
+          TEST_POSTGRES_PORT={{ vector_postgres_port }}
+          TEST_POSTGRES_CONNECT_TIMEOUT=5
+          TEST_POSTGRES_POOL_MIN_SIZE=1
+          TEST_POSTGRES_POOL_MAX_SIZE=5
+          TEST_POSTGRES_POOL_TIMEOUT=5
+
+          BACKEND_PORT={{ vector_backend_port }}
+          FRONTEND_ORIGINS={{ vector_frontend_origins }}
+
+          AIS_SOURCE={{ vector_ais_source }}
+          AIS_FIXTURE_PATH={{ vector_ais_fixture_path }}
+          AIS_ALLOW_FIXTURE_FALLBACK={{ vector_ais_allow_fixture_fallback }}
+          AISSTREAM_WS_URL={{ vector_aisstream_ws_url }}
+          AISSTREAM_API_KEY={{ vector_aisstream_api_key }}
+          AISSTREAM_BOUNDING_BOXES={{ vector_aisstream_bounding_boxes }}
+          AISSTREAM_MESSAGE_TYPES={{ vector_aisstream_message_types }}
+          AISSTREAM_CONNECT_TIMEOUT_SECONDS={{ vector_aisstream_connect_timeout_seconds }}
+          AISSTREAM_SAMPLE_MESSAGE_LIMIT={{ vector_aisstream_sample_message_limit }}
+          AISSTREAM_DISABLE_TLS_VERIFY={{ vector_aisstream_disable_tls_verify }}
+          AIS_CONSUMER_POLL_SECONDS={{ vector_ais_consumer_poll_seconds }}
+          AIS_CONSUMER_RUN_ONCE={{ vector_ais_consumer_run_once }}
+          AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS={{ vector_ais_consumer_reconnect_backoff_seconds }}
+
+          FRONTEND_PORT={{ vector_frontend_port }}
+          VITE_API_BASE_URL={{ vector_vite_api_base_url }}
+          VITE_API_PROXY_TARGET={{ vector_vite_api_proxy_target }}
+
+          PGADMIN_DEFAULT_EMAIL={{ vector_pgadmin_default_email }}
+          PGADMIN_DEFAULT_PASSWORD={{ vector_pgadmin_default_password }}
+          PGADMIN_PORT={{ vector_pgadmin_port }}
+      no_log: true
+
+    # ============================================================
+    # COMPOSE - Pull and run the Vector stack
+    # ============================================================
+
+    - name: Log in to GitHub Container Registry
+      command: docker login ghcr.io --username {{ vector_ghcr_username }} --password-stdin
+      args:
+        stdin: "{{ vector_ghcr_token }}"
+      changed_when: false
+      no_log: true
+      when:
+        - vector_ghcr_username is defined
+        - vector_ghcr_token is defined
+
+    - name: Pull Vector container images
+      command: docker compose --project-name {{ vector_project_name }} pull
+      args:
+        chdir: "{{ vector_deploy_dir }}"
+      register: vector_compose_pull
+      changed_when: "'Downloaded newer image' in vector_compose_pull.stdout or 'Pulled' in vector_compose_pull.stdout"
+
+    - name: Start Vector containers
+      command: docker compose --project-name {{ vector_project_name }} up -d --remove-orphans
+      args:
+        chdir: "{{ vector_deploy_dir }}"
+      register: vector_compose_up
+      changed_when: "'Started' in vector_compose_up.stdout or 'Created' in vector_compose_up.stdout or 'Recreated' in vector_compose_up.stdout"
+
+    - name: Wait for Vector API health check
+      uri:
+        url: "http://127.0.0.1:{{ vector_backend_port }}/health"
+        status_code: 200
+      register: vector_health
+      retries: 12
+      delay: 5
+      until: vector_health.status == 200
