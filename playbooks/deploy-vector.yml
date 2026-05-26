@@ -1,54 +1,55 @@
 ---
-- name: Deploy Vector with Docker Compose
-  hosts: local
+- name: Deploy Azitrax with Docker Compose
+  hosts: tailscale
   become: yes
   vars_files:
     - ../vars/secrets.yml
   vars:
-    vector_deploy_dir: /srv/vector
-    vector_project_name: vector
-    vector_image_tag: develop
-    vector_backend_image: ghcr.io/snkennedy21/vector-backend
-    vector_frontend_image: ghcr.io/snkennedy21/vector-frontend
+    azitrax_deploy_dir: /srv/azitrax
+    azitrax_project_name: azitrax
+    azitrax_image_tag: develop
 
-    vector_frontend_port: 5173
-    vector_backend_port: 8000
-    vector_postgres_port: 5432
-    vector_redis_port: 6379
-    vector_pgadmin_port: 5050
+    # Keep these image defaults until the GitHub repository/package names move.
+    azitrax_backend_image: ghcr.io/snkennedy21/azitrax-backend
+    azitrax_frontend_image: ghcr.io/snkennedy21/azitrax-frontend
 
-    vector_postgres_db: vector
-    vector_postgres_user: vector
-    vector_postgres_password: vector
+    azitrax_public_origin: https://azitrax.com
+    azitrax_cloudflare_tunnel_token: "{{ vault_azitrax_cloudflare_tunnel_token | default(azitrax_cloudflare_tunnel_token_secret | default('')) }}"
+    azitrax_postgres_db: azitrax
+    azitrax_postgres_user: azitrax
+    azitrax_postgres_password: "{{ vault_azitrax_postgres_password | default(azitrax_postgres_password_secret | default('')) }}"
 
-    vector_redis_url: redis://redis:6379/0
-    vector_frontend_origins: "http://{{ ansible_host }}:{{ vector_frontend_port }},http://localhost:{{ vector_frontend_port }}"
-    vector_vite_api_base_url: /api
-    vector_vite_api_proxy_target: http://backend:8000
+    azitrax_redis_url: redis://redis:6379/0
 
-    vector_ais_source: fixture
-    vector_ais_fixture_path: /app/app/fixtures/aisstream-position-reports-sample.json
-    vector_ais_allow_fixture_fallback: "true"
-    vector_aisstream_ws_url: wss://stream.aisstream.io/v0/stream
-    vector_aisstream_api_key: ""
-    vector_aisstream_bounding_boxes: "[[[40.4774,-74.2591],[40.9176,-73.7004]]]"
-    vector_aisstream_message_types: PositionReport
-    vector_aisstream_connect_timeout_seconds: 200
-    vector_aisstream_sample_message_limit: 50
-    vector_aisstream_disable_tls_verify: "false"
-    vector_ais_consumer_poll_seconds: 60
-    vector_ais_consumer_run_once: "false"
-    vector_ais_consumer_reconnect_backoff_seconds: 5
-
-    vector_pgadmin_default_email: admin@example.com
-    vector_pgadmin_default_password: vector
+    azitrax_aisstream_api_key: "{{ vector_aisstream_api_key | default('') }}"
+    azitrax_aisstream_ws_url: wss://stream.aisstream.io/v0/stream
+    azitrax_aisstream_bounding_boxes: "[[[40.4774,-74.2591],[40.9176,-73.7004]]]"
+    azitrax_aisstream_message_types: PositionReport
+    azitrax_aisstream_connect_timeout_seconds: 200
+    azitrax_aisstream_sample_message_limit: 50
+    azitrax_aisstream_disable_tls_verify: "false"
+    azitrax_ais_consumer_poll_seconds: 60
+    azitrax_ais_consumer_reconnect_backoff_seconds: 5
 
   tasks:
     # ============================================================
     # HOST - Minimal packages needed to run Compose
     # ============================================================
 
-    - name: Install Vector deployment dependencies
+    - name: Validate Azitrax deployment secrets
+      assert:
+        that:
+          - azitrax_cloudflare_tunnel_token | length > 0
+          - azitrax_aisstream_api_key | length > 0
+          - azitrax_postgres_password | length > 0
+          - azitrax_postgres_password != '<CHANGE_ME_STRONG_POSTGRES_PASSWORD>'
+        fail_msg: >-
+          Define azitrax_cloudflare_tunnel_token_secret, vector_aisstream_api_key, and
+          vault_azitrax_postgres_password or azitrax_postgres_password_secret
+          in ../vars/secrets.yml before deploying Azitrax.
+      no_log: true
+
+    - name: Install Azitrax deployment dependencies
       apt:
         name:
           - python3-docker
@@ -62,202 +63,89 @@
         enabled: yes
         state: started
 
+    - name: Check for legacy Vector deploy directory
+      stat:
+        path: /srv/vector/compose.yaml
+      register: legacy_vector_compose
+
+    - name: Stop legacy Vector compose stack
+      command: docker compose --project-name vector down --remove-orphans
+      args:
+        chdir: /srv/vector
+      when: legacy_vector_compose.stat.exists
+
     # ============================================================
-    # VECTOR - Render production Compose and environment
+    # AZITRAX - Render production Compose and environment
     # ============================================================
 
-    - name: Create Vector deploy directory
+    - name: Create Azitrax deploy directory
       file:
-        path: "{{ vector_deploy_dir }}"
+        path: "{{ azitrax_deploy_dir }}"
         state: directory
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: "0755"
 
-    - name: Copy Vector production Compose file
+    - name: Copy Azitrax nginx gateway config
       copy:
-        dest: "{{ vector_deploy_dir }}/compose.yaml"
+        src: ../../azitrax/deploy/nginx/gateway.conf
+        dest: "{{ azitrax_deploy_dir }}/nginx.conf"
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: "0644"
-        content: |
-          x-ais-environment: &ais-environment
-            AIS_SOURCE: "${AIS_SOURCE:-fixture}"
-            AIS_FIXTURE_PATH: "${AIS_FIXTURE_PATH:-/app/app/fixtures/aisstream-position-reports-sample.json}"
-            AIS_ALLOW_FIXTURE_FALLBACK: "${AIS_ALLOW_FIXTURE_FALLBACK:-true}"
-            AISSTREAM_WS_URL: "${AISSTREAM_WS_URL:-wss://stream.aisstream.io/v0/stream}"
-            AISSTREAM_API_KEY: "${AISSTREAM_API_KEY:-}"
-            AISSTREAM_BOUNDING_BOXES: "${AISSTREAM_BOUNDING_BOXES:-[[[40.4774,-74.2591],[40.9176,-73.7004]]]}"
-            AISSTREAM_MESSAGE_TYPES: "${AISSTREAM_MESSAGE_TYPES:-PositionReport}"
-            AISSTREAM_CONNECT_TIMEOUT_SECONDS: "${AISSTREAM_CONNECT_TIMEOUT_SECONDS:-30}"
-            AISSTREAM_SAMPLE_MESSAGE_LIMIT: "${AISSTREAM_SAMPLE_MESSAGE_LIMIT:-50}"
-            AISSTREAM_DISABLE_TLS_VERIFY: "${AISSTREAM_DISABLE_TLS_VERIFY:-false}"
+      register: azitrax_nginx_config
 
-          services:
-            frontend:
-              image: "${VECTOR_FRONTEND_IMAGE:-ghcr.io/snkennedy21/vector-frontend}:${VECTOR_IMAGE_TAG:-develop}"
-              environment:
-                VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
-                VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://backend:8000}
-              ports:
-                - "${FRONTEND_PORT:-5173}:5173"
-              depends_on:
-                backend:
-                  condition: service_healthy
-
-            backend:
-              image: "${VECTOR_BACKEND_IMAGE:-ghcr.io/snkennedy21/vector-backend}:${VECTOR_IMAGE_TAG:-develop}"
-              environment:
-                <<: *ais-environment
-                DATABASE_URL: ${DATABASE_URL:-}
-                POSTGRES_HOST: ${POSTGRES_HOST:-db}
-                POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-                POSTGRES_DB: ${POSTGRES_DB:-vector}
-                POSTGRES_USER: ${POSTGRES_USER:-vector}
-                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vector}
-                POSTGRES_CONNECT_TIMEOUT: ${POSTGRES_CONNECT_TIMEOUT:-5}
-                POSTGRES_POOL_MIN_SIZE: ${POSTGRES_POOL_MIN_SIZE:-1}
-                POSTGRES_POOL_MAX_SIZE: ${POSTGRES_POOL_MAX_SIZE:-5}
-                POSTGRES_POOL_TIMEOUT: ${POSTGRES_POOL_TIMEOUT:-5}
-                REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-                FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
-              ports:
-                - "${BACKEND_PORT:-8000}:8000"
-              depends_on:
-                db:
-                  condition: service_healthy
-                redis:
-                  condition: service_healthy
-              healthcheck:
-                test:
-                  [
-                    "CMD",
-                    "python",
-                    "-c",
-                    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()",
-                  ]
-                interval: 5s
-                timeout: 5s
-                retries: 12
-
-            ais-consumer:
-              image: "${VECTOR_BACKEND_IMAGE:-ghcr.io/snkennedy21/vector-backend}:${VECTOR_IMAGE_TAG:-develop}"
-              command: python -m app.ais_consumer
-              environment:
-                <<: *ais-environment
-                AIS_CONSUMER_POLL_SECONDS: "${AIS_CONSUMER_POLL_SECONDS:-60}"
-                AIS_CONSUMER_RUN_ONCE: "${AIS_CONSUMER_RUN_ONCE:-false}"
-                AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS: "${AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS:-5}"
-                REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-              depends_on:
-                redis:
-                  condition: service_healthy
-
-            db:
-              image: postgis/postgis:16-3.4
-              environment:
-                POSTGRES_DB: ${POSTGRES_DB:-vector}
-                POSTGRES_USER: ${POSTGRES_USER:-vector}
-                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vector}
-              ports:
-                - "${POSTGRES_PORT:-5432}:5432"
-              volumes:
-                - postgres_data:/var/lib/postgresql/data
-              healthcheck:
-                test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
-                interval: 5s
-                timeout: 5s
-                retries: 12
-
-            redis:
-              image: redis:7-alpine
-              ports:
-                - "${REDIS_PORT:-6379}:6379"
-              healthcheck:
-                test: ["CMD", "redis-cli", "ping"]
-                interval: 5s
-                timeout: 5s
-                retries: 12
-
-            pgadmin:
-              image: dpage/pgadmin4:8
-              environment:
-                PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
-                PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-vector}
-              ports:
-                - "${PGADMIN_PORT:-5050}:80"
-              volumes:
-                - pgadmin_data:/var/lib/pgadmin
-              depends_on:
-                db:
-                  condition: service_healthy
-
-          volumes:
-            postgres_data:
-            pgadmin_data:
-
-    - name: Write Vector environment file
+    - name: Copy Azitrax production Compose file
       copy:
-        dest: "{{ vector_deploy_dir }}/.env"
+        src: ../../azitrax/compose.prod.yaml
+        dest: "{{ azitrax_deploy_dir }}/compose.yaml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0644"
+
+    - name: Write Azitrax environment file
+      copy:
+        dest: "{{ azitrax_deploy_dir }}/.env"
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: "0600"
         content: |
-          VECTOR_IMAGE_TAG={{ vector_image_tag }}
-          VECTOR_BACKEND_IMAGE={{ vector_backend_image }}
-          VECTOR_FRONTEND_IMAGE={{ vector_frontend_image }}
+          COMPOSE_PROJECT_NAME={{ azitrax_project_name }}
+          AZITRAX_IMAGE_TAG={{ azitrax_image_tag }}
+          AZITRAX_BACKEND_IMAGE={{ azitrax_backend_image }}
+          AZITRAX_FRONTEND_IMAGE={{ azitrax_frontend_image }}
 
-          POSTGRES_DB={{ vector_postgres_db }}
+          CLOUDFLARED_TUNNEL_TOKEN={{ azitrax_cloudflare_tunnel_token }}
+
+          POSTGRES_DB={{ azitrax_postgres_db }}
           POSTGRES_HOST=db
-          POSTGRES_USER={{ vector_postgres_user }}
-          POSTGRES_PASSWORD={{ vector_postgres_password }}
-          POSTGRES_PORT={{ vector_postgres_port }}
+          POSTGRES_USER={{ azitrax_postgres_user }}
+          POSTGRES_PASSWORD={{ azitrax_postgres_password }}
+          POSTGRES_PORT=5432
           POSTGRES_CONNECT_TIMEOUT=5
           POSTGRES_POOL_MIN_SIZE=1
           POSTGRES_POOL_MAX_SIZE=5
           POSTGRES_POOL_TIMEOUT=5
 
-          REDIS_URL={{ vector_redis_url }}
-          REDIS_PORT={{ vector_redis_port }}
+          REDIS_URL={{ azitrax_redis_url }}
+          FRONTEND_ORIGINS={{ azitrax_public_origin }}
 
-          TEST_POSTGRES_DB={{ vector_postgres_db }}_test
-          TEST_POSTGRES_HOST=db
-          TEST_POSTGRES_USER={{ vector_postgres_user }}
-          TEST_POSTGRES_PASSWORD={{ vector_postgres_password }}
-          TEST_POSTGRES_PORT={{ vector_postgres_port }}
-          TEST_POSTGRES_CONNECT_TIMEOUT=5
-          TEST_POSTGRES_POOL_MIN_SIZE=1
-          TEST_POSTGRES_POOL_MAX_SIZE=5
-          TEST_POSTGRES_POOL_TIMEOUT=5
+          AISSTREAM_WS_URL={{ azitrax_aisstream_ws_url }}
+          AISSTREAM_API_KEY={{ azitrax_aisstream_api_key }}
+          AISSTREAM_BOUNDING_BOXES={{ azitrax_aisstream_bounding_boxes }}
+          AISSTREAM_MESSAGE_TYPES={{ azitrax_aisstream_message_types }}
+          AISSTREAM_CONNECT_TIMEOUT_SECONDS={{ azitrax_aisstream_connect_timeout_seconds }}
+          AISSTREAM_SAMPLE_MESSAGE_LIMIT={{ azitrax_aisstream_sample_message_limit }}
+          AISSTREAM_DISABLE_TLS_VERIFY={{ azitrax_aisstream_disable_tls_verify }}
+          AIS_CONSUMER_POLL_SECONDS={{ azitrax_ais_consumer_poll_seconds }}
+          AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS={{ azitrax_ais_consumer_reconnect_backoff_seconds }}
 
-          BACKEND_PORT={{ vector_backend_port }}
-          FRONTEND_ORIGINS={{ vector_frontend_origins }}
-
-          AIS_SOURCE={{ vector_ais_source }}
-          AIS_FIXTURE_PATH={{ vector_ais_fixture_path }}
-          AIS_ALLOW_FIXTURE_FALLBACK={{ vector_ais_allow_fixture_fallback }}
-          AISSTREAM_WS_URL={{ vector_aisstream_ws_url }}
-          AISSTREAM_API_KEY={{ vector_aisstream_api_key }}
-          AISSTREAM_BOUNDING_BOXES={{ vector_aisstream_bounding_boxes }}
-          AISSTREAM_MESSAGE_TYPES={{ vector_aisstream_message_types }}
-          AISSTREAM_CONNECT_TIMEOUT_SECONDS={{ vector_aisstream_connect_timeout_seconds }}
-          AISSTREAM_SAMPLE_MESSAGE_LIMIT={{ vector_aisstream_sample_message_limit }}
-          AISSTREAM_DISABLE_TLS_VERIFY={{ vector_aisstream_disable_tls_verify }}
-          AIS_CONSUMER_POLL_SECONDS={{ vector_ais_consumer_poll_seconds }}
-          AIS_CONSUMER_RUN_ONCE={{ vector_ais_consumer_run_once }}
-          AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS={{ vector_ais_consumer_reconnect_backoff_seconds }}
-
-          FRONTEND_PORT={{ vector_frontend_port }}
-          VITE_API_BASE_URL={{ vector_vite_api_base_url }}
-          VITE_API_PROXY_TARGET={{ vector_vite_api_proxy_target }}
-
-          PGADMIN_DEFAULT_EMAIL={{ vector_pgadmin_default_email }}
-          PGADMIN_DEFAULT_PASSWORD={{ vector_pgadmin_default_password }}
-          PGADMIN_PORT={{ vector_pgadmin_port }}
+          VITE_API_BASE_URL=/api
+          VITE_API_PROXY_TARGET=http://backend:8000
       no_log: true
 
     # ============================================================
-    # COMPOSE - Pull and run the Vector stack
+    # COMPOSE - Pull and run the Azitrax stack
     # ============================================================
 
     - name: Log in to GitHub Container Registry
@@ -270,25 +158,34 @@
         - vector_ghcr_username is defined
         - vector_ghcr_token is defined
 
-    - name: Pull Vector container images
-      command: docker compose --project-name {{ vector_project_name }} pull
+    - name: Pull Azitrax container images
+      command: docker compose --project-name {{ azitrax_project_name }} pull
       args:
-        chdir: "{{ vector_deploy_dir }}"
-      register: vector_compose_pull
-      changed_when: "'Downloaded newer image' in vector_compose_pull.stdout or 'Pulled' in vector_compose_pull.stdout"
+        chdir: "{{ azitrax_deploy_dir }}"
+      register: azitrax_compose_pull
+      changed_when: "'Downloaded newer image' in azitrax_compose_pull.stdout or 'Pulled' in azitrax_compose_pull.stdout"
 
-    - name: Start Vector containers
-      command: docker compose --project-name {{ vector_project_name }} up -d --remove-orphans
+    - name: Start Azitrax containers
+      command: docker compose --project-name {{ azitrax_project_name }} up -d --remove-orphans
       args:
-        chdir: "{{ vector_deploy_dir }}"
-      register: vector_compose_up
-      changed_when: "'Started' in vector_compose_up.stdout or 'Created' in vector_compose_up.stdout or 'Recreated' in vector_compose_up.stdout"
+        chdir: "{{ azitrax_deploy_dir }}"
+      register: azitrax_compose_up
+      changed_when: "'Started' in azitrax_compose_up.stdout or 'Created' in azitrax_compose_up.stdout or 'Recreated' in azitrax_compose_up.stdout"
 
-    - name: Wait for Vector API health check
-      uri:
-        url: "http://127.0.0.1:{{ vector_backend_port }}/health"
-        status_code: 200
-      register: vector_health
+    - name: Restart Azitrax nginx when gateway config changes
+      command: docker compose --project-name {{ azitrax_project_name }} restart nginx
+      args:
+        chdir: "{{ azitrax_deploy_dir }}"
+      when: azitrax_nginx_config.changed
+
+    - name: Wait for Azitrax API health check inside backend container
+      command: >-
+        docker compose --project-name {{ azitrax_project_name }} exec -T backend
+        python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"
+      args:
+        chdir: "{{ azitrax_deploy_dir }}"
+      register: azitrax_health
       retries: 12
       delay: 5
-      until: vector_health.status == 200
+      until: azitrax_health.rc == 0
+      changed_when: false
