@@ -3,33 +3,12 @@
   hosts: tailscale
   become: yes
   vars_files:
+    - ../vars/azitrax.yml
     - ../vars/secrets.yml
   vars:
-    azitrax_deploy_dir: /srv/azitrax
-    azitrax_project_name: azitrax
-    azitrax_image_tag: develop
-
-    # Keep these image defaults until the GitHub repository/package names move.
-    azitrax_backend_image: ghcr.io/snkennedy21/azitrax-backend
-    azitrax_frontend_image: ghcr.io/snkennedy21/azitrax-frontend
-
-    azitrax_public_origin: https://azitrax.com
     azitrax_cloudflare_tunnel_token: "{{ vault_azitrax_cloudflare_tunnel_token | default(azitrax_cloudflare_tunnel_token_secret | default('')) }}"
-    azitrax_postgres_db: azitrax
-    azitrax_postgres_user: azitrax
     azitrax_postgres_password: "{{ vault_azitrax_postgres_password | default(azitrax_postgres_password_secret | default('')) }}"
-
-    azitrax_redis_url: redis://redis:6379/0
-
-    azitrax_aisstream_api_key: "{{ vector_aisstream_api_key | default('') }}"
-    azitrax_aisstream_ws_url: wss://stream.aisstream.io/v0/stream
-    azitrax_aisstream_bounding_boxes: "[[[40.4774,-74.2591],[40.9176,-73.7004]]]"
-    azitrax_aisstream_message_types: PositionReport
-    azitrax_aisstream_connect_timeout_seconds: 200
-    azitrax_aisstream_sample_message_limit: 50
-    azitrax_aisstream_disable_tls_verify: "false"
-    azitrax_ais_consumer_poll_seconds: 60
-    azitrax_ais_consumer_reconnect_backoff_seconds: 5
+    azitrax_aisstream_api_key: "{{ vault_azitrax_aisstream_api_key | default(azitrax_aisstream_api_key_secret | default(vector_aisstream_api_key | default(''))) }}"
 
   tasks:
     # ============================================================
@@ -44,10 +23,11 @@
           - azitrax_postgres_password | length > 0
           - azitrax_postgres_password != '<CHANGE_ME_STRONG_POSTGRES_PASSWORD>'
         fail_msg: >-
-          Define azitrax_cloudflare_tunnel_token_secret, vector_aisstream_api_key, and
-          vault_azitrax_postgres_password or azitrax_postgres_password_secret
-          in ../vars/secrets.yml before deploying Azitrax.
-      no_log: true
+          Define azitrax_cloudflare_tunnel_token_secret,
+          azitrax_aisstream_api_key_secret, and azitrax_postgres_password_secret
+          in ../vars/secrets.yml before deploying Azitrax. Vault-backed
+          deployments may use vault_azitrax_cloudflare_tunnel_token,
+          vault_azitrax_aisstream_api_key, and vault_azitrax_postgres_password.
 
     - name: Install Azitrax deployment dependencies
       apt:
@@ -117,15 +97,16 @@
 
           CLOUDFLARED_TUNNEL_TOKEN={{ azitrax_cloudflare_tunnel_token }}
 
+          DATABASE_URL={{ azitrax_database_url }}
           POSTGRES_DB={{ azitrax_postgres_db }}
-          POSTGRES_HOST=db
+          POSTGRES_HOST={{ azitrax_postgres_host }}
           POSTGRES_USER={{ azitrax_postgres_user }}
           POSTGRES_PASSWORD={{ azitrax_postgres_password }}
-          POSTGRES_PORT=5432
-          POSTGRES_CONNECT_TIMEOUT=5
-          POSTGRES_POOL_MIN_SIZE=1
-          POSTGRES_POOL_MAX_SIZE=5
-          POSTGRES_POOL_TIMEOUT=5
+          POSTGRES_PORT={{ azitrax_postgres_port }}
+          POSTGRES_CONNECT_TIMEOUT={{ azitrax_postgres_connect_timeout }}
+          POSTGRES_POOL_MIN_SIZE={{ azitrax_postgres_pool_min_size }}
+          POSTGRES_POOL_MAX_SIZE={{ azitrax_postgres_pool_max_size }}
+          POSTGRES_POOL_TIMEOUT={{ azitrax_postgres_pool_timeout }}
 
           REDIS_URL={{ azitrax_redis_url }}
           FRONTEND_ORIGINS={{ azitrax_public_origin }}
@@ -140,8 +121,8 @@
           AIS_CONSUMER_POLL_SECONDS={{ azitrax_ais_consumer_poll_seconds }}
           AIS_CONSUMER_RECONNECT_BACKOFF_SECONDS={{ azitrax_ais_consumer_reconnect_backoff_seconds }}
 
-          VITE_API_BASE_URL=/api
-          VITE_API_PROXY_TARGET=http://backend:8000
+          VITE_API_BASE_URL={{ azitrax_vite_api_base_url }}
+          VITE_API_PROXY_TARGET={{ azitrax_vite_api_proxy_target }}
       no_log: true
 
     # ============================================================

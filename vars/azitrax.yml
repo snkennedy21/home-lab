@@ -1,0 +1,37 @@
+---
+# Non-secret Azitrax deployment configuration.
+# Secret values for manual deploys belong in vars/secrets.yml.
+
+azitrax_deploy_dir: /srv/azitrax
+azitrax_project_name: azitrax
+azitrax_image_tag: develop
+
+# Keep these image defaults until the GitHub repository/package names move.
+azitrax_backend_image: ghcr.io/snkennedy21/azitrax-backend
+azitrax_frontend_image: ghcr.io/snkennedy21/azitrax-frontend
+
+azitrax_public_origin: https://azitrax.com
+
+azitrax_database_url: ""
+azitrax_postgres_host: db
+azitrax_postgres_port: 5432
+azitrax_postgres_db: azitrax
+azitrax_postgres_user: azitrax
+azitrax_postgres_connect_timeout: 5
+azitrax_postgres_pool_min_size: 1
+azitrax_postgres_pool_max_size: 5
+azitrax_postgres_pool_timeout: 5
+
+azitrax_redis_url: redis://redis:6379/0
+
+azitrax_aisstream_ws_url: wss://stream.aisstream.io/v0/stream
+azitrax_aisstream_bounding_boxes: "[[[40.4774,-74.2591],[40.9176,-73.7004]]]"
+azitrax_aisstream_message_types: PositionReport
+azitrax_aisstream_connect_timeout_seconds: 200
+azitrax_aisstream_sample_message_limit: 50
+azitrax_aisstream_disable_tls_verify: "false"
+azitrax_ais_consumer_poll_seconds: 60
+azitrax_ais_consumer_reconnect_backoff_seconds: 5
+
+azitrax_vite_api_base_url: /api
+azitrax_vite_api_proxy_target: http://backend:8000
